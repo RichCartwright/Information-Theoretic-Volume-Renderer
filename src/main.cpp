@@ -53,8 +53,21 @@
 #include <helper_functions.h>
 #include <helper_timer.h>
 
+#include <Eigen/Core>
+#include <unsupported/Eigen/MatrixFunctions>
+
+#include "entropy/Entropy.h"
+
 typedef unsigned int uint;
 typedef unsigned char uchar;
+
+unsigned int* hHistogramA = nullptr; 
+unsigned int* hHistogramB = nullptr;
+size_t BIN_COUNT = 511;
+size_t histSize = sizeof(unsigned int) * BIN_COUNT;
+
+Entropy* Entropy::instance = 0;
+Entropy* entropyHelper = entropyHelper->getInstance();
 
 #define MAX_EPSILON_ERROR 5.00f
 #define THRESHOLD         0.30f

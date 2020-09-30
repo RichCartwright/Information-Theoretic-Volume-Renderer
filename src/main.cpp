@@ -25,7 +25,7 @@
 */
 
 // OpenGL Graphics includes
-#include <GL/glew.h>
+#include <helper_gl.h>
 #if defined (__APPLE__) || defined(MACOSX)
   #pragma clang diagnostic ignored "-Wdeprecated-declarations"
   #include <GLUT/glut.h>
@@ -42,6 +42,7 @@
 #include <vector_types.h>
 #include <vector_functions.h>
 #include <driver_functions.h>
+
 
 // CUDA utilities
 #include <helper_cuda.h>

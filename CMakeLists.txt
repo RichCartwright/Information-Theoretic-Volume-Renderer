@@ -27,14 +27,21 @@ set_target_properties(  MIVolumeRender
 add_executable(MIVolumeRenderer src/main.cpp)
 
 find_package(Eigen3 3.3 REQUIRED)
+find_package(OpenGL REQUIRED COMPONENTS OpenGL)
+find_package(GLUT REQUIRED)
+find_package(GLEW 2.0 REQUIRED)
+
+add_dependencies(MIVolumeRenderer OpenGL::OpenGL)
 include_directories(
     ${EIGEN3_INCLUDE_DIR}
     ${CUDA_INCLUDE_DIRS}
+    ${GLUT_INCLUDE_DIRS}
     src/entropy
     src/cuda
     )
 target_link_libraries(MIVolumeRenderer PRIVATE MIVolumeRender
-    ${GLUT_LIBRARIES}
-    ${OPENGL_LIBRARIES}
+    ${GLUT_LIBRARY}
     Eigen3::Eigen
+    OpenGL::OpenGL
+    GLEW::GLEW
     )

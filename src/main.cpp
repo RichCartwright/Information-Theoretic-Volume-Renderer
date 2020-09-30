@@ -25,7 +25,7 @@
 */
 
 // OpenGL Graphics includes
-#include <helper_gl.h>
+#include <GL/glew.h>
 #if defined (__APPLE__) || defined(MACOSX)
   #pragma clang diagnostic ignored "-Wdeprecated-declarations"
   #include <GLUT/glut.h>
@@ -97,7 +97,7 @@ float transferScale = 1.0f;
 bool linearFiltering = true;
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
-GLuint tex = 0;     // OpenGL texture object
+GLuint _tex = 0;     // OpenGL texture object
 struct cudaGraphicsResource *cuda_pbo_resource; // CUDA Graphics Resource (to transfer PBO)
 
 StopWatchInterface *timer = 0;
@@ -218,7 +218,7 @@ void display()
 
     // copy from pbo to texture
     glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
-    glBindTexture(GL_TEXTURE_2D, tex);
+    glBindTexture(GL_TEXTURE_2D, _tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
     glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
 
@@ -392,7 +392,7 @@ void cleanup()
     {
         cudaGraphicsUnregisterResource(cuda_pbo_resource);
         glDeleteBuffersARB(1, &pbo);
-        glDeleteTextures(1, &tex);
+        glDeleteTextures(1, &_tex);
     }
     // cudaDeviceReset causes the driver to clean up all state. While
     // not mandatory in normal operation, it is good practice.  It is also
@@ -428,7 +428,7 @@ void initPixelBuffer()
 
         // delete old buffer
         glDeleteBuffersARB(1, &pbo);
-        glDeleteTextures(1, &tex);
+        glDeleteTextures(1, &_tex);
     }
 
     // create pixel buffer object for display
@@ -441,8 +441,8 @@ void initPixelBuffer()
     checkCudaErrors(cudaGraphicsGLRegisterBuffer(&cuda_pbo_resource, pbo, cudaGraphicsMapFlagsWriteDiscard));
 
     // create texture for display
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
+    glGenTextures(1, &_tex);
+    glBindTexture(GL_TEXTURE_2D, _tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);

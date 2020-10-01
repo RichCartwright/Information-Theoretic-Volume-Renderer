@@ -99,10 +99,19 @@ __device__ uint rgbaFloatToInt(float4 rgba)
     return (uint(rgba.w*255)<<24) | (uint(rgba.z*255)<<16) | (uint(rgba.y*255)<<8) | uint(rgba.x*255);
 }
 
+__device__ void BinSingle(float input, uint* histogram, size_t size)
+{
+  uint bin_count = size/sizeof(uint);
+  float step = 1.f/bin_count;
+  uint idx = (uint)(input/step);
+
+  histogram[idx] += 1;
+}
+
 __global__ void
 d_render(uint *d_output, uint imageW, uint imageH,
          float density, float brightness,
-         float transferOffset, float transferScale)
+         float transferOffset, float transferScale, uint* pVolumeDataHist, size_t histSize)
 {
     const int maxSteps = 500;
     const float tstep = 0.01f;
@@ -144,6 +153,9 @@ d_render(uint *d_output, uint imageW, uint imageH,
         // remap position to [0, 1] coordinates
         float sample = tex3D(tex, pos.x*0.5f+0.5f, pos.y*0.5f+0.5f, pos.z*0.5f+0.5f);
         //sample *= 64.0f;    // scale for 10-bit data
+
+        BinSingle(sample, pVolumeDataHist, histSize);
+        __syncthreads();
 
         // lookup in transfer function texture
         float4 col = tex1D(transferTex, (sample-transferOffset)*transferScale);
@@ -241,10 +253,10 @@ void freeCudaBuffers()
 
 extern "C"
 void render_kernel(dim3 gridSize, dim3 blockSize, uint *d_output, uint imageW, uint imageH,
-                   float density, float brightness, float transferOffset, float transferScale)
+                   float density, float brightness, float transferOffset, float transferScale, uint* pVolumeDataHist, size_t histSize)
 {
     d_render<<<gridSize, blockSize>>>(d_output, imageW, imageH, density,
-                                      brightness, transferOffset, transferScale);
+                                      brightness, transferOffset, transferScale, pVolumeDataHist, histSize);
 }
 
 extern "C"

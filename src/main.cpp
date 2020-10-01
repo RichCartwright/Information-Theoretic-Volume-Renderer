@@ -61,13 +61,21 @@
 typedef unsigned int uint;
 typedef unsigned char uchar;
 
-unsigned int* hHistogramA = nullptr; 
-unsigned int* hHistogramB = nullptr;
-size_t BIN_COUNT = 511;
+unsigned int* pVolumeDataHist = nullptr;    // This is the data after transfer function - the ray marches 
+unsigned int* pRawDataHist = nullptr;       // The raw data
+
+float entropyA = 0.f, entropyB = 0.f, jointEntropy = 0.f;
+float mutualInformation = 0.f;
+float scale = 10000000.f; // This is for scaling the histogram renders - there are many smarter ways to do this
+
+size_t BIN_COUNT = 511;              // This crashes at 512, has to be *2-1, I think
 size_t histSize = sizeof(unsigned int) * BIN_COUNT;
+size_t histSizeCache = 0;
 
 Entropy* Entropy::instance = 0;
-Entropy* entropyHelper = entropyHelper->getInstance();
+Entropy* entropyHelper = entropyHelper->getInstance(); // Static instance
+
+GLint *windowID = nullptr; 
 
 #define MAX_EPSILON_ERROR 5.00f
 #define THRESHOLD         0.30f
@@ -96,6 +104,7 @@ typedef unsigned char VolumeType;
 //typedef unsigned short VolumeType;
 
 uint width = 512, height = 512;
+uint statsWidth = width, statsHeight = 512;
 dim3 blockSize(16, 16);
 dim3 gridSize;
 
@@ -103,11 +112,11 @@ float3 viewRotation;
 float3 viewTranslation = make_float3(0.0, 0.0, -4.0f);
 float invViewMatrix[12];
 
-float density = 0.05f;
-float brightness = 1.0f;
-float transferOffset = 0.0f;
-float transferScale = 1.0f;
-bool linearFiltering = true;
+float density           = 0.05f;
+float brightness        = 1.0f;
+float transferOffset    = 0.0f;
+float transferScale     = 1.0f;
+bool linearFiltering    = false;
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
 GLuint _tex = 0;     // OpenGL texture object
@@ -116,11 +125,11 @@ struct cudaGraphicsResource *cuda_pbo_resource; // CUDA Graphics Resource (to tr
 StopWatchInterface *timer = 0;
 
 // Auto-Verification Code
-const int frameCheckNumber = 2;
-int fpsCount = 0;        // FPS count for averaging
-int fpsLimit = 1;        // FPS limit for sampling
-int g_Index = 0;
-unsigned int frameCount = 0;
+const int frameCheckNumber  = 2;
+int fpsCount                = 0;    // FPS count for averaging
+int fpsLimit                = 1;    // FPS limit for sampling
+int g_Index                 = 0;
+unsigned int frameCount     = 0;
 
 int *pArgc;
 char **pArgv;
@@ -133,8 +142,11 @@ extern "C" void setTextureFilterMode(bool bLinearFilter);
 extern "C" void initCuda(void *h_volume, cudaExtent volumeSize);
 extern "C" void freeCudaBuffers();
 extern "C" void render_kernel(dim3 gridSize, dim3 blockSize, uint *d_output, uint imageW, uint imageH,
-                              float density, float brightness, float transferOffset, float transferScale);
+                              float density, float brightness, float transferOffset, float transferScale, uint* pVolumeDataDist, size_t histSize);
 extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
+
+void dirtyDrawBitmapString(int x, int y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
+void dirtyDrawBitmapString(float x, float y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
 
 void initPixelBuffer();
 
@@ -157,9 +169,52 @@ void computeFPS()
     }
 }
 
+// 
+void dirtyDrawBitmapString(int x, int y, const char* string, GLfloat* colour, void* font )
+{
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0, width, height, 0, -100.0, 100.0);
+    (colour) ? glColor4fv(colour) : glColor4f(1.f,1.f,1.f,1.f); // Just make it white if no pointer is passed
+    glRasterPos2i(x,y);
+    const char* character = string;
+
+    while(*character != '\0')
+    {
+        glutBitmapCharacter(font, *character);
+        character++;
+    }
+}
+
+void dirtyDrawBitmapString(float x, float y, const char* string, GLfloat* colour, void* font )
+{
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0, 1.0, 0.0, 1.0, -100.0, 100.0);
+    (colour) ? glColor4fv(colour) : glColor4f(1.f,1.f,1.f,1.f); // Just make it white if no pointer is passed
+    glRasterPos2f(x,y);
+    const char* character = string;
+
+    while(*character != '\0')
+    {
+        glutBitmapCharacter(font, *character);
+        character++;
+    }
+}
+
 // render image using CUDA
 void render()
 {
+    histSize = sizeof(uint)*BIN_COUNT; 
+    if(histSizeCache != histSize)
+    {
+        printf("Allocating Volume Data Histogram of size %li\n", histSize);
+        checkCudaErrors(cudaFree(pVolumeDataHist));
+        checkCudaErrors(cudaMallocManaged(&pVolumeDataHist, histSize));
+        histSizeCache = histSize;
+    }
+
+    checkCudaErrors(cudaMemset((uint*)pVolumeDataHist, 0, histSize));
     copyInvViewMatrix(invViewMatrix, sizeof(float4)*3);
 
     // map PBO to get CUDA device pointer
@@ -175,7 +230,7 @@ void render()
     checkCudaErrors(cudaMemset(d_output, 0, width*height*4));
 
     // call CUDA kernel, writing results to PBO
-    render_kernel(gridSize, blockSize, d_output, width, height, density, brightness, transferOffset, transferScale);
+    render_kernel(gridSize, blockSize, d_output, width, height, density, brightness, transferOffset, transferScale, pVolumeDataHist, histSize);
 
     getLastCudaError("kernel failed");
 
@@ -214,44 +269,102 @@ void display()
     render();
 
     // display results
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // draw image from PBO
     glDisable(GL_DEPTH_TEST);
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-#if 0
-    // draw using glDrawPixels (slower)
-    glRasterPos2i(0, 0);
-    glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
-    glDrawPixels(width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
-    glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
-#else
     // draw using texture
-
     // copy from pbo to texture
     glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, pbo);
     glBindTexture(GL_TEXTURE_2D, _tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
     glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
 
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0, 1.0, 0.0, 1.0, -100.0, 100.0);
+
     // draw textured quad
     glEnable(GL_TEXTURE_2D);
-    glBegin(GL_QUADS);
-    glTexCoord2f(0, 0);
-    glVertex2f(0, 0);
-    glTexCoord2f(1, 0);
-    glVertex2f(1, 0);
-    glTexCoord2f(1, 1);
-    glVertex2f(1, 1);
-    glTexCoord2f(0, 1);
-    glVertex2f(0, 1);
+    glBegin(GL_TRIANGLE_STRIP);
+        glColor3f(1,1,1);
+        glTexCoord2f(0, 0);
+        glVertex2f(0, 0);
+        glTexCoord2f(1, 0);
+        glVertex2f(1, 0);
+        glTexCoord2f(0, 1);
+        glVertex2f(0, 1);
+        glTexCoord2f(1, 1);
+        glVertex2f(1, 1);
     glEnd();
 
     glDisable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, 0);
-#endif
 
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    glScalef(0.07, 0.5, 1.0);
+    glBegin(GL_TRIANGLE_STRIP);
+        glColor3f(1,0,0);
+        glVertex2f(0.1, ((0.9-0.1)/(6))*1);
+        glVertex2f(1,   ((0.9-0.1)/(6))*1);
+        
+        glColor3f(1,0.5,0);
+        glVertex2f(0.1, ((0.9-0.1)/(6))*2);
+        glVertex2f(1,   ((0.9-0.1)/(6))*2);
+
+        glColor3f(1,1,0);
+        glVertex2f(0.1, ((0.9-0.1)/(6))*3);
+        glVertex2f(1,   ((0.9-0.1)/(6))*3);
+
+        glColor3f(0,1,0);
+        glVertex2f(0.1, ((0.9-0.1)/(6))*4);
+        glVertex2f(1,   ((0.9-0.1)/(6))*4);
+
+        glColor3f(0,1,1);
+        glVertex2f(0.1, ((0.9-0.1)/(6))*5);
+        glVertex2f(1,   ((0.9-0.1)/(6))*5);
+
+        glColor3f(0,0,1);
+        glVertex2f(0.1, ((0.9-0.1)/(6))*6);
+        glVertex2f(1,   ((0.9-0.1)/(6))*6);
+
+        glColor3f(1,0,1);
+        glVertex2f(0.1, ((0.9-0.1)/(6))*7);
+        glVertex2f(1,   ((0.9-0.1)/(6))*7);
+    glEnd();
+
+
+    if(pVolumeDataHist != nullptr)
+    {
+        // These shouldn't really be hardcoded but...
+        float bottom = 0.1f, top = 0.9f;
+        float difference = top - bottom;
+        float step = difference / BIN_COUNT;
+        for(size_t i = 0; i < BIN_COUNT + 1; ++i)
+        {
+            float barY = 0.1f + (step * i);
+            glLineWidth(4.0f);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); 
+            glEnable( GL_BLEND ); 
+
+            glBegin(GL_LINES);
+                glColor4f(1.f, 1.f, 1.f, 1.f); 
+                glVertex2f(1.f, barY);
+                // 0.0001f
+                glVertex2f((float)pVolumeDataHist[i]*scale + 1.f, barY);
+                if((float)pVolumeDataHist[i] != 0.f)
+                    printf("%f ", (float)pVolumeDataHist[i]); 
+            glEnd();
+        }
+        printf("\n");
+    }
+
+    glPopMatrix();
+
+    glClearColor(.5f, .5, .5f, 1.0f);
     glutSwapBuffers();
     glutReportErrors();
 
@@ -260,9 +373,30 @@ void display()
     computeFPS();
 }
 
+void DisplayStatsWindow()
+{
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	//glClear(GL_COLOR_BUFFER_BIT);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glLoadIdentity();
+
+    // Stats draw
+    //drawHistograms();
+    //displaySettings();
+
+    glutSwapBuffers();
+    glutReportErrors();
+    glClearColor(.5f, .5f, .5f, 1.f);
+}
+
 void idle()
 {
-    glutPostRedisplay();
+    for(GLint i = 0; i < 2; ++i)
+    {
+        glutSetWindow(windowID[i]);
+        glutPostRedisplay();
+    }
 }
 
 void keyboard(unsigned char key, int x, int y)
@@ -270,12 +404,16 @@ void keyboard(unsigned char key, int x, int y)
     switch (key)
     {
         case 27:
-            #if defined (__APPLE__) || defined(MACOSX)
-                exit(EXIT_SUCCESS);
-            #else
-                glutDestroyWindow(glutGetWindow());
-                return;
-            #endif
+            for(GLint i = 0; i < 2; i++)
+            {
+                glutSetWindow(windowID[i]);
+                #if defined (__APPLE__) || defined(MACOSX)
+                    exit(EXIT_SUCCESS);
+                #else
+                    glutDestroyWindow(glutGetWindow());
+                    return;
+                #endif
+            }
             break;
 
         case 'f':
@@ -319,8 +457,11 @@ void keyboard(unsigned char key, int x, int y)
             break;
     }
 
-    printf("density = %.2f, brightness = %.2f, transferOffset = %.2f, transferScale = %.2f\n", density, brightness, transferOffset, transferScale);
-    glutPostRedisplay();
+    for(GLint i = 0; i < 2; ++i)
+    {
+        glutSetWindow(windowID[i]);
+        glutPostRedisplay();
+    }
 }
 
 int ox, oy;
@@ -339,7 +480,12 @@ void mouse(int button, int state, int x, int y)
 
     ox = x;
     oy = y;
-    glutPostRedisplay();
+
+    for(GLint i = 0; i < 2; ++i)
+    {
+        glutSetWindow(windowID[i]); 
+        glutPostRedisplay();
+    }
 }
 
 void motion(int x, int y)
@@ -368,7 +514,12 @@ void motion(int x, int y)
 
     ox = x;
     oy = y;
-    glutPostRedisplay();
+
+    for(GLint i = 0; i < 2; ++i)
+    {
+        glutSetWindow(windowID[i]); 
+        glutPostRedisplay();
+    }
 }
 
 int iDivUp(int a, int b)
@@ -378,21 +529,24 @@ int iDivUp(int a, int b)
 
 void reshape(int w, int h)
 {
-    width = w;
-    height = h;
-    initPixelBuffer();
+    if(glutGetWindow() == windowID[0])
+    {
+        width = w;
+        height = h;
+        initPixelBuffer();
 
-    // calculate new grid size
-    gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
+        // calculate new grid size
+        gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
 
-    glViewport(0, 0, w, h);
+        glViewport(0, 0, w, h);
 
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0.0, 1.0, 0.0, 1.0, 0.0, 1.0);
+    }
 }
 
 void cleanup()
@@ -407,6 +561,8 @@ void cleanup()
         glDeleteBuffersARB(1, &pbo);
         glDeleteTextures(1, &_tex);
     }
+
+    checkCudaErrors(cudaFree(pVolumeDataHist));
     // cudaDeviceReset causes the driver to clean up all state. While
     // not mandatory in normal operation, it is good practice.  It is also
     // needed to ensure correct operation when the application is being
@@ -421,7 +577,10 @@ void initGL(int *argc, char **argv)
     glutInit(argc, argv);
     glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
     glutInitWindowSize(width, height);
-    glutCreateWindow("CUDA volume rendering");
+    glutInitWindowPosition(100, 100);
+    windowID[0] = glutCreateWindow("CUDA volume rendering");
+    glutInitWindowPosition(100+width, 100);
+    windowID[1] = glutCreateWindow("Information Theoretic Statistics");
 
     glewInit();
 
@@ -460,6 +619,20 @@ void initPixelBuffer()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void initHistgramBuffers()
+{
+    // We need to allocate this as cuda shared memory - good balance of accessibility and speed
+    if(!pRawDataHist)
+    {
+        checkCudaErrors(cudaMallocManaged(&pRawDataHist, BIN_COUNT*sizeof(uint)));
+        for(uint i = 0; i < BIN_COUNT; ++i)
+        {
+            pRawDataHist[i] = 0;
+        }
+    }
+    checkCudaErrors(cudaMallocManaged(&pVolumeDataHist, histSize));
 }
 
 // Load raw data from disk
@@ -502,83 +675,14 @@ int chooseCudaDevice(int argc, const char **argv, bool bUseOpenGL)
 
     return result;
 }
-
-void runSingleTest(const char *ref_file, const char *exec_path)
-{
-    bool bTestResult = true;
-
-    uint *d_output;
-    checkCudaErrors(cudaMalloc((void **)&d_output, width*height*sizeof(uint)));
-    checkCudaErrors(cudaMemset(d_output, 0, width*height*sizeof(uint)));
-
-    float modelView[16] =
-    {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 4.0f, 1.0f
-    };
-
-    invViewMatrix[0] = modelView[0];
-    invViewMatrix[1] = modelView[4];
-    invViewMatrix[2] = modelView[8];
-    invViewMatrix[3] = modelView[12];
-    invViewMatrix[4] = modelView[1];
-    invViewMatrix[5] = modelView[5];
-    invViewMatrix[6] = modelView[9];
-    invViewMatrix[7] = modelView[13];
-    invViewMatrix[8] = modelView[2];
-    invViewMatrix[9] = modelView[6];
-    invViewMatrix[10] = modelView[10];
-    invViewMatrix[11] = modelView[14];
-
-    // call CUDA kernel, writing results to PBO
-    copyInvViewMatrix(invViewMatrix, sizeof(float4)*3);
-
-    // Start timer 0 and process n loops on the GPU
-    int nIter = 10;
-
-    for (int i = -1; i < nIter; i++)
-    {
-        if (i == 0)
-        {
-            cudaDeviceSynchronize();
-            sdkStartTimer(&timer);
-        }
-
-        render_kernel(gridSize, blockSize, d_output, width, height, density, brightness, transferOffset, transferScale);
-    }
-
-    cudaDeviceSynchronize();
-    sdkStopTimer(&timer);
-    // Get elapsed time and throughput, then log to sample and master logs
-    double dAvgTime = sdkGetTimerValue(&timer)/(nIter * 1000.0);
-    printf("volumeRender, Throughput = %.4f MTexels/s, Time = %.5f s, Size = %u Texels, NumDevsUsed = %u, Workgroup = %u\n",
-           (1.0e-6 * width * height)/dAvgTime, dAvgTime, (width * height), 1, blockSize.x * blockSize.y);
-
-
-    getLastCudaError("Error: render_kernel() execution FAILED");
-    checkCudaErrors(cudaDeviceSynchronize());
-
-    unsigned char *h_output = (unsigned char *)malloc(width*height*4);
-    checkCudaErrors(cudaMemcpy(h_output, d_output, width*height*4, cudaMemcpyDeviceToHost));
-
-    sdkSavePPM4ub("volume.ppm", h_output, width, height);
-    bTestResult = sdkComparePPM("volume.ppm", sdkFindFilePath(ref_file, exec_path), MAX_EPSILON_ERROR, THRESHOLD, true);
-
-    cudaFree(d_output);
-    free(h_output);
-    cleanup();
-
-    exit(bTestResult ? EXIT_SUCCESS : EXIT_FAILURE);
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 // Program main
 ////////////////////////////////////////////////////////////////////////////////
 int
 main(int argc, char **argv)
 {
+    // this is just the pointer for the two windows
+    windowID = (GLint*)malloc(2*sizeof(GLint));
     pArgc = &argc;
     pArgv = argv;
 
@@ -663,28 +767,31 @@ main(int argc, char **argv)
 
     sdkCreateTimer(&timer);
 
-    printf("Press '+' and '-' to change density (0.01 increments)\n"
-           "      ']' and '[' to change brightness\n"
-           "      ';' and ''' to modify transfer function offset\n"
-           "      '.' and ',' to modify transfer function scale\n\n");
-
     // calculate new grid size
     gridSize = dim3(iDivUp(width, blockSize.x), iDivUp(height, blockSize.y));
 
-    if (ref_file)
-    {
-        runSingleTest(ref_file, argv[0]);
-    }
-    else
-    {
-        // This is the normal rendering path for VolumeRender
-        glutDisplayFunc(display);
-        glutKeyboardFunc(keyboard);
-        glutMouseFunc(mouse);
-        glutMotionFunc(motion);
-        glutReshapeFunc(reshape);
-        glutIdleFunc(idle);
+    // This is the normal rendering path for VolumeRender
+    glutSetWindow(windowID[0]);
+    glutDisplayFunc(display);
+    glutKeyboardFunc(keyboard);
+    glutMouseFunc(mouse);
+    glutMotionFunc(motion);
+    glutReshapeFunc(reshape);
+    glutIdleFunc(idle);
 
+    glutSetWindow(windowID[1]);
+    glutReshapeWindow(statsWidth, statsHeight);
+    glutInitWindowPosition(width, height);
+    glutDisplayFunc(DisplayStatsWindow);
+    glutKeyboardFunc(keyboard);
+    glutReshapeFunc(reshape);
+    glutSetWindow(windowID[0]); //Change back to the main window once we've handled
+
+    initHistgramBuffers();
+
+    for(GLint i = 0; i < 2; i++)
+    {
+        glutSetWindow(windowID[i]);
         initPixelBuffer();
 
 #if defined (__APPLE__) || defined(MACOSX)
@@ -695,4 +802,5 @@ main(int argc, char **argv)
 
         glutMainLoop();
     }
+    
 }

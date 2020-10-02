@@ -66,7 +66,7 @@ unsigned int* pRawDataHist = nullptr;       // The raw data
 
 float entropyA = 0.f, entropyB = 0.f, jointEntropy = 0.f;
 float mutualInformation = 0.f;
-float scale = 10000000.f; // This is for scaling the histogram renders - there are many smarter ways to do this
+float scale = 0.001f; // This is for scaling the histogram renders - there are many smarter ways to do this
 
 size_t BIN_COUNT = 511;              // This crashes at 512, has to be *2-1, I think
 size_t histSize = sizeof(unsigned int) * BIN_COUNT;
@@ -214,7 +214,6 @@ void render()
         histSizeCache = histSize;
     }
 
-    checkCudaErrors(cudaMemset((uint*)pVolumeDataHist, 0, histSize));
     copyInvViewMatrix(invViewMatrix, sizeof(float4)*3);
 
     // map PBO to get CUDA device pointer
@@ -230,8 +229,12 @@ void render()
     checkCudaErrors(cudaMemset(d_output, 0, width*height*4));
 
     // call CUDA kernel, writing results to PBO
+    for(int i = 0; i < BIN_COUNT + 1; i++)
+    {
+        pVolumeDataHist[i] = 0;
+    }
     render_kernel(gridSize, blockSize, d_output, width, height, density, brightness, transferOffset, transferScale, pVolumeDataHist, histSize);
-
+    cudaDeviceSynchronize();
     getLastCudaError("kernel failed");
 
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
@@ -345,7 +348,7 @@ void display()
         float step = difference / BIN_COUNT;
         for(size_t i = 0; i < BIN_COUNT + 1; ++i)
         {
-            float barY = 0.1f + (step * i);
+            float barY = 0.137f + (step * i);
             glLineWidth(4.0f);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); 
             glEnable( GL_BLEND ); 
@@ -353,13 +356,9 @@ void display()
             glBegin(GL_LINES);
                 glColor4f(1.f, 1.f, 1.f, 1.f); 
                 glVertex2f(1.f, barY);
-                // 0.0001f
                 glVertex2f((float)pVolumeDataHist[i]*scale + 1.f, barY);
-                if((float)pVolumeDataHist[i] != 0.f)
-                    printf("%f ", (float)pVolumeDataHist[i]); 
             glEnd();
         }
-        printf("\n");
     }
 
     glPopMatrix();
@@ -648,6 +647,10 @@ void *loadRawFile(char *filename, size_t size)
 
     void *data = malloc(size);
     size_t read = fread(data, 1, size, fp);
+    for(int i = 0; i < (size); i++)
+    {
+        printf("%d", (int)((unsigned char*)data)[i]); 
+    }
     fclose(fp);
 
 #if defined(_MSC_VER_)

@@ -71,6 +71,7 @@ float scale = 0.001f; // This is for scaling the histogram renders - there are m
 size_t BIN_COUNT = 511;              // This crashes at 512, has to be *2-1, I think
 size_t histSize = sizeof(unsigned int) * BIN_COUNT;
 size_t histSizeCache = 0;
+int DataRange[2] = {0,0}; 
 
 Entropy* Entropy::instance = 0;
 Entropy* entropyHelper = entropyHelper->getInstance(); // Static instance
@@ -384,6 +385,36 @@ void DisplayStatsWindow()
     //drawHistograms();
     //displaySettings();
 
+    glLineWidth(2.0f);
+    if(pRawDataHist != nullptr)
+    {
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0, width, height, 0, -100.0, 100.0);
+
+
+        float left = ((width/4)) + 35.f, right = (left + 200);
+        float bottom = 350.f;
+        float difference = right - left;
+        float step = difference / BIN_COUNT;
+
+        for(size_t i = 0; i < BIN_COUNT; ++i)
+        {
+            GLfloat white[4] = {1.f, 1.f, 1.f, 1.f};
+            glColor4fv(white);
+            float barX = left + (step * i);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glEnable( GL_BLEND ); 
+
+            glBegin(GL_LINES);
+                glVertex2f(barX, bottom);
+                glVertex2f(barX, bottom - ((float)pRawDataHist[i]*0.1f));
+            glEnd();
+        }
+        entropyHelper->GetEntropy(pVolumeDataHist, pRawDataHist, BIN_COUNT, &entropyA, &entropyB, &jointEntropy, &mutualInformation);
+        std::cout << "Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
+    }
+
     glutSwapBuffers();
     glutReportErrors();
     glClearColor(.5f, .5f, .5f, 1.f);
@@ -622,21 +653,39 @@ void initPixelBuffer()
 
 void initHistgramBuffers()
 {
+    // The raw data hist never needs to be sent to a kernel - we can just normally allocate it.
+    pRawDataHist = (unsigned int*)malloc(BIN_COUNT*sizeof(unsigned int));
     // We need to allocate this as cuda shared memory - good balance of accessibility and speed
-    if(!pRawDataHist)
-    {
-        checkCudaErrors(cudaMallocManaged(&pRawDataHist, BIN_COUNT*sizeof(uint)));
-        for(uint i = 0; i < BIN_COUNT; ++i)
-        {
-            pRawDataHist[i] = 0;
-        }
-    }
     checkCudaErrors(cudaMallocManaged(&pVolumeDataHist, histSize));
+}
+
+void NormaliseAndBin(void* data, size_t dataSize)
+{
+    // We will use the histogram and ranges stored in local scope
+    //      just pass in the data that needs to be binned
+    // FIRST - we need to normalize (0,1) the whole dataset based on the ranges
+    float normalizedData[dataSize] = {0.0f}; 
+
+    for(int i = 0; i < dataSize; i++)
+    {
+        // Dodgy as hell casting, not safe but okay since we know its type
+        normalizedData[i] = (((float)((unsigned char*)data)[i])-DataRange[0])/(DataRange[1]-DataRange[0]);
+        // Now we need to bin the value
+        float step = 1.f/BIN_COUNT;
+        uint idx = (uint)(normalizedData[i]/step);
+        pRawDataHist[idx] += 1;
+    }
 }
 
 // Load raw data from disk
 void *loadRawFile(char *filename, size_t size)
 {
+    // First we want to allocate the histograms 
+    initHistgramBuffers();
+
+    int lowest = std::numeric_limits<int>::max();
+    int highest = std::numeric_limits<int>::min();
+
     FILE *fp = fopen(filename, "rb");
 
     if (!fp)
@@ -647,10 +696,15 @@ void *loadRawFile(char *filename, size_t size)
 
     void *data = malloc(size);
     size_t read = fread(data, 1, size, fp);
+
+    // We need to get the highest and lowest value for normalisation - I figured this was easier than using high-level vectors
     for(int i = 0; i < (size); i++)
     {
-        printf("%d", (int)((unsigned char*)data)[i]); 
+        int val = ((int)((unsigned char*)data)[i]);
+        (val < lowest) ? DataRange[0] = val : (val > highest) ? DataRange[1] = val : NULL;
     }
+
+    NormaliseAndBin(data, size);
     fclose(fp);
 
 #if defined(_MSC_VER_)
@@ -789,8 +843,6 @@ main(int argc, char **argv)
     glutKeyboardFunc(keyboard);
     glutReshapeFunc(reshape);
     glutSetWindow(windowID[0]); //Change back to the main window once we've handled
-
-    initHistgramBuffers();
 
     for(GLint i = 0; i < 2; i++)
     {

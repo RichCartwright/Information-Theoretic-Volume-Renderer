@@ -6,9 +6,7 @@
 
 void Entropy::GetEntropy(   uint* histA, uint* histB, size_t binCount, 
                             float* entA, float* entB, 
-                            float* jEnt, float* cEnt, 
-                            float* mI,
-                            int* sum)
+                            float* jEnt, float* mI)
 {
 // Entropy
     Eigen::MatrixXd eigHistA;
@@ -38,9 +36,6 @@ void Entropy::GetEntropy(   uint* histA, uint* histB, size_t binCount,
         *jEnt = eigJointHist.cwiseProduct(Log2(eigJointHist)).sum() * -1;
         *mI = *entA + *entB - *jEnt;
     }
-    
-    // Set the total sum of the histogram data
-    *sum = GetTotal(histA, binCount);
 }
 
 float Entropy::SingleEntropy(uint* hist, size_t bin_count)

@@ -15,7 +15,7 @@ class Entropy {
             return instance;
         }
 
-        void GetEntropy(uint* histA, uint* histB, size_t binCount, float* entA, float* entB, float* jEnt, float* cEnt, float* mI, int* sum);
+        void GetEntropy(uint* histA, uint* histB, size_t binCount, float* entA, float* entB, float* jEnt, float* mI);
         float SingleEntropy(uint* hist, size_t bin_count);
 
 

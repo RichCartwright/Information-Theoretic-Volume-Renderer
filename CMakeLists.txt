@@ -11,6 +11,7 @@ file(GLOB HEADERS
     ${PROJECT_SOURCE_DIR}/src/*.h
     ${PROJECT_SOURCE_DIR}/src/entropy/*.h
     ${PROJECT_SOURCE_DIR}/src/cuda/*.h
+    ${PROJECT_SOURCE_DIR}/src/util/*.h
     )
 
 add_library(MIVolumeRender STATIC
@@ -38,6 +39,7 @@ include_directories(
     ${GLUT_INCLUDE_DIRS}
     src/entropy
     src/cuda
+    src/util
     )
 target_link_libraries(MIVolumeRenderer PRIVATE MIVolumeRender
     ${GLUT_LIBRARY}

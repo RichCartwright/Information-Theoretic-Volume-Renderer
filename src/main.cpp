@@ -58,6 +58,9 @@
 
 #include "entropy/Entropy.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "util/stb_image_write.h"
+
 typedef unsigned int uint;
 typedef unsigned char uchar;
 
@@ -72,6 +75,9 @@ size_t BIN_COUNT = 511;              // This crashes at 512, has to be *2-1, I t
 size_t histSize = sizeof(unsigned int) * BIN_COUNT;
 size_t histSizeCache = 0;
 int DataRange[2] = {0,0}; 
+float highestMI = 0.0f;
+bool LOG_FLAG = false;
+bool LOG_FILE_WRITTEN = false;
 
 Entropy* Entropy::instance = 0;
 Entropy* entropyHelper = entropyHelper->getInstance(); // Static instance
@@ -170,7 +176,7 @@ void computeFPS()
     }
 }
 
-// 
+//
 void dirtyDrawBitmapString(int x, int y, const char* string, GLfloat* colour, void* font )
 {
     glMatrixMode(GL_PROJECTION);
@@ -203,9 +209,33 @@ void dirtyDrawBitmapString(float x, float y, const char* string, GLfloat* colour
     }
 }
 
+void TakeSnapshot()
+{
+    // Just dump a PNG of the current framebuffer
+    glutSetWindow(windowID[0]);
+    char* imgData = (char*)malloc(width*height*3); //RGB
+    glPixelStorei(GL_PACK_ALIGNMENT,1);
+    glReadPixels(0,0,width, height, GL_RGB, GL_UNSIGNED_BYTE, imgData);
+    if(stbi_write_png("./data/Sampling/bestMIResult.png", width, height, 3, imgData, 0) == 0)
+        fprintf(stderr, "ERROR: Writing PNG image\n");
+    free(imgData);
+}
+
 // render image using CUDA
 void render()
 {
+    if(LOG_FLAG)
+    {
+        if((viewRotation.y += 1.f) >= 360.f)
+        {
+            viewRotation.y = 0.f;
+            viewRotation.x += 1.f;
+        }
+        if(viewRotation.x > 360.f)
+            exit(EXIT_SUCCESS);
+    }
+
+    // Not really needed here, but if the bin count changes, we need to reallocate
     histSize = sizeof(uint)*BIN_COUNT; 
     if(histSizeCache != histSize)
     {
@@ -239,11 +269,37 @@ void render()
     getLastCudaError("kernel failed");
 
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
+
+    entropyHelper->GetEntropy(pVolumeDataHist, pRawDataHist, BIN_COUNT, &entropyA, &entropyB, &jointEntropy, &mutualInformation);
+    
+    //std::cout << "Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
+    if(LOG_FLAG)
+    {
+        if(mutualInformation > highestMI)
+        {
+            highestMI = mutualInformation;
+            TakeSnapshot();
+        }
+
+        // Lets record the whole dump the frame to CSV too, we just need the rotation and MI for now
+        FILE* runCSV; 
+        if(!LOG_FILE_WRITTEN)
+        {
+            runCSV = std::fopen("./data/Sampling/FullRun.csv", "w+");
+            LOG_FILE_WRITTEN = true;
+        }
+        else
+        {
+            runCSV = std::fopen("./data/Sampling/FullRun.csv", "a+");
+        }
+        fprintf(runCSV, "%f,%f,%f,\n", viewRotation.x, viewRotation.y, mutualInformation);
+        std::fclose(runCSV); 
+    }
 }
 
 // display results using OpenGL (called by GLUT)
 void display()
-{
+{    
     sdkStartTimer(&timer);
 
     // use OpenGL to build view matrix
@@ -411,8 +467,6 @@ void DisplayStatsWindow()
                 glVertex2f(barX, bottom - ((float)pRawDataHist[i]*0.1f));
             glEnd();
         }
-        entropyHelper->GetEntropy(pVolumeDataHist, pRawDataHist, BIN_COUNT, &entropyA, &entropyB, &jointEntropy, &mutualInformation);
-        std::cout << "Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
     }
 
     glutSwapBuffers();
@@ -593,11 +647,7 @@ void cleanup()
     }
 
     checkCudaErrors(cudaFree(pVolumeDataHist));
-    // cudaDeviceReset causes the driver to clean up all state. While
-    // not mandatory in normal operation, it is good practice.  It is also
-    // needed to ensure correct operation when the application is being
-    // profiled. Calling cudaDeviceReset causes all profile data to be
-    // flushed before the application exits
+    free(windowID);
     cudaDeviceReset();
 }
 
@@ -807,6 +857,21 @@ main(int argc, char **argv)
         volumeSize.depth = n;
     }
 
+    if (checkCmdLineFlag(argc, (const char **) argv, "-l"))
+    {
+        LOG_FLAG = true;
+    }
+
+    if (checkCmdLineFlag(argc, (const char **) argv, "-h"))
+    {
+        std::cout << "================= Mutual Information Volume Renderer =================" << std::endl;
+        std::cout << "``` Simple CUDA accelerated volume renderer (CUDA sample) with added mutual information metrics ```" << std::endl;
+        std::cout << "Flags: " << std::endl;
+        std::cout << "  -h     = Help (display this)" << std::endl; 
+        std::cout << "  -l     = Logger mode, sample MI around the volume" << std::endl;
+        std::cout << "======================================================================" << std::endl;
+        exit(EXIT_WAIVED);
+    }
     // load volume data
     char *path = sdkFindFilePath(volumeFilename, argv[0]);
 
@@ -835,6 +900,7 @@ main(int argc, char **argv)
     glutMotionFunc(motion);
     glutReshapeFunc(reshape);
     glutIdleFunc(idle);
+    stbi_flip_vertically_on_write(1);
 
     glutSetWindow(windowID[1]);
     glutReshapeWindow(statsWidth, statsHeight);

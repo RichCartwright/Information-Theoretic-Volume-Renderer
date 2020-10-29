@@ -8,6 +8,11 @@ void Entropy::GetEntropy(   uint* histA, uint* histB, size_t binCount,
                             float* entA, float* entB, 
                             float* jEnt, float* mI)
 {
+    if(!histA && !histB)
+    {
+        std::cout << "Check histogram pointer allocation" << std::endl;
+        return;
+    }
 // Entropy
     Eigen::MatrixXd eigHistA;
     Eigen::Map<Eigen::MatrixXi> mapHistA((int*)histA, 1, binCount);

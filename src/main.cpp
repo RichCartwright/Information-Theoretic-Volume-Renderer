@@ -58,8 +58,18 @@
 
 #include "entropy/Entropy.h"
 
+// Socket and learning stuff
+#include "socket.h"
+#include <sys/socket.h>
+#include <arpa/inet.h>
+using namespace serversock;
+struct serversock::objectData data;
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "util/stb_image_write.h"
+
+#include <iostream>
+#include <fstream>
 
 typedef unsigned int uint;
 typedef unsigned char uchar;
@@ -74,7 +84,7 @@ float scale = 0.001f; // This is for scaling the histogram renders - there are m
 size_t BIN_COUNT = 511;              // This crashes at 512, has to be *2-1, I think
 size_t histSize = sizeof(unsigned int) * BIN_COUNT;
 size_t histSizeCache = 0;
-int DataRange[2] = {0,0}; 
+float DataRange[2] = {0.f,0.f}; 
 float highestMI = 0.0f;
 bool LOG_FLAG = false;
 bool LOG_FILE_WRITTEN = false;
@@ -123,7 +133,14 @@ float density           = 0.05f;
 float brightness        = 1.0f;
 float transferOffset    = 0.0f;
 float transferScale     = 1.0f;
-bool linearFiltering    = false;
+bool linearFiltering    = true;
+
+// Socket stuff
+struct sockaddr_in server; 
+int sock;
+bool serverFailed = false;
+
+std::ofstream* outputFile = nullptr;
 
 GLuint pbo = 0;     // OpenGL pixel buffer object
 GLuint _tex = 0;     // OpenGL texture object
@@ -154,8 +171,95 @@ extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
 
 void dirtyDrawBitmapString(int x, int y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
 void dirtyDrawBitmapString(float x, float y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
-
 void initPixelBuffer();
+
+void SendToServer(char* message = nullptr);
+void ListenToServer();
+
+void SetupServerConnection(char* addr = "127.0.0.1", int port = 8888)
+{
+    close(sock);
+    //std::cout << "[CLIENT]: Connecting to server" << std::endl; 
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if(sock == -1)
+    {
+        std::cout << "[CLIENT]: Could not create socket for some reason" << std::endl;
+    }
+    else
+    {
+        std::cout << "[CLIENT]: Socket created with code " << sock << std::endl;
+    }
+    
+    if(addr)
+        server.sin_addr.s_addr = inet_addr(addr);
+    else
+        server.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port);
+
+    //Connect to remote server
+    if (connect(sock , (struct sockaddr *)&server , sizeof(server)) < 0)
+    {
+        perror("[CLIENT]: Connect failed. Error");
+        // This is a bit of a temp hack, if the server doesn't connect we will never listen for it again
+        serverFailed = true;
+        return; 
+    }
+
+    //SendToServer((char*)"[CLIENT]: Connected to server\n");
+}
+
+void SendToServer(char* message)
+{
+    int i=0;
+    
+    if(message == nullptr) //then well post the MI information
+    {
+        // for the sake of ease, ill just set the timestep to zero 
+        float MI_arr[5];
+        MI_arr[0] = 0;
+        MI_arr[1] = viewRotation.x;
+        MI_arr[2] = viewRotation.y;
+        MI_arr[3] = viewTranslation.z;
+        MI_arr[4] = mutualInformation;
+        char const * p = reinterpret_cast<char const *>(MI_arr); 
+        std::string s(p, p + sizeof MI_arr);
+        //std::cout << s << std::endl;
+        write(sock, &s[0], sizeof(MI_arr));
+        ListenToServer();
+    }
+    else
+    {
+        write(sock,message,strlen(message));
+    }
+    SetupServerConnection();
+}
+
+void ListenToServer()
+{
+    int i;
+    char server_reply[2000] = {0};
+    ssize_t len;
+    
+    //std::cout << "[CLIENT]: Waiting for reply\n" << std::endl; 
+    if( (len = recv(sock, server_reply, 2000, 0)) < 0 )
+    {
+        std::cout << "[CLIENT]: Recv Failed\n" << std::endl; 
+        close(sock);
+    }
+    
+    // This is crazy unsafe - look into using protobuffs
+    float* unpacked = (float*)server_reply; 
+    printf("[SERVER]: %f, %f, %f\n", unpacked[0], unpacked[1], unpacked[2]);
+    viewRotation.x = unpacked[0];
+    viewRotation.y = unpacked[1];
+    viewTranslation.z = unpacked[2];
+    for (i=0; i< strlen(server_reply); i++)
+    {
+      server_reply[i] = '\0';
+    }
+}
 
 void computeFPS()
 {
@@ -209,32 +313,9 @@ void dirtyDrawBitmapString(float x, float y, const char* string, GLfloat* colour
     }
 }
 
-void TakeSnapshot()
-{
-    // Just dump a PNG of the current framebuffer
-    glutSetWindow(windowID[0]);
-    char* imgData = (char*)malloc(width*height*3); //RGB
-    glPixelStorei(GL_PACK_ALIGNMENT,1);
-    glReadPixels(0,0,width, height, GL_RGB, GL_UNSIGNED_BYTE, imgData);
-    if(stbi_write_png("./data/Sampling/bestMIResult.png", width, height, 3, imgData, 0) == 0)
-        fprintf(stderr, "ERROR: Writing PNG image\n");
-    free(imgData);
-}
-
 // render image using CUDA
 void render()
 {
-    if(LOG_FLAG)
-    {
-        if((viewRotation.y += 1.f) >= 360.f)
-        {
-            viewRotation.y = 0.f;
-            viewRotation.x += 1.f;
-        }
-        if(viewRotation.x > 360.f)
-            exit(EXIT_SUCCESS);
-    }
-
     // Not really needed here, but if the bin count changes, we need to reallocate
     histSize = sizeof(uint)*BIN_COUNT; 
     if(histSizeCache != histSize)
@@ -267,34 +348,8 @@ void render()
     render_kernel(gridSize, blockSize, d_output, width, height, density, brightness, transferOffset, transferScale, pVolumeDataHist, histSize);
     cudaDeviceSynchronize();
     getLastCudaError("kernel failed");
-
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
-    entropyHelper->GetEntropy(pVolumeDataHist, pRawDataHist, BIN_COUNT, &entropyA, &entropyB, &jointEntropy, &mutualInformation);
-    
-    //std::cout << "Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
-    if(LOG_FLAG)
-    {
-        if(mutualInformation > highestMI)
-        {
-            highestMI = mutualInformation;
-            TakeSnapshot();
-        }
-
-        // Lets record the whole dump the frame to CSV too, we just need the rotation and MI for now
-        FILE* runCSV; 
-        if(!LOG_FILE_WRITTEN)
-        {
-            runCSV = std::fopen("./data/Sampling/FullRun.csv", "w+");
-            LOG_FILE_WRITTEN = true;
-        }
-        else
-        {
-            runCSV = std::fopen("./data/Sampling/FullRun.csv", "a+");
-        }
-        fprintf(runCSV, "%f,%f,%f,\n", viewRotation.x, viewRotation.y, mutualInformation);
-        std::fclose(runCSV); 
-    }
 }
 
 // display results using OpenGL (called by GLUT)
@@ -476,6 +531,34 @@ void DisplayStatsWindow()
 
 void idle()
 {
+    entropyHelper->GetEntropy(pVolumeDataHist, pRawDataHist, BIN_COUNT, &entropyA, &entropyB, &jointEntropy, &mutualInformation);
+   // std::cout << "Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
+    //std::cout << viewRotation.x << "," << viewRotation.y << "," << viewTranslation.z << "," << mutualInformation << "," << std::endl;
+    if(LOG_FLAG)
+    {
+        if(outputFile->is_open())
+        {
+            *outputFile << viewRotation.x << "," << viewRotation.y << "," << viewTranslation.z << "," << mutualInformation << "," << std::endl;
+        }
+
+        if(viewRotation.y++ > 360.f)
+        {
+            viewRotation.x++;
+            std::cout << viewRotation.x << std::endl;
+            viewRotation.y = 0.f;
+        }
+
+        if(viewRotation.x > 360.f)
+        {
+            // sanity check
+            if(outputFile->is_open())
+                outputFile->close();
+            exit(EXIT_SUCCESS);
+        }
+    }
+
+    if(!serverFailed)
+        SendToServer();
     for(GLint i = 0; i < 2; ++i)
     {
         glutSetWindow(windowID[i]);
@@ -648,6 +731,10 @@ void cleanup()
 
     checkCudaErrors(cudaFree(pVolumeDataHist));
     free(windowID);
+    delete pRawDataHist;
+
+    if(LOG_FLAG || outputFile)
+        delete outputFile; 
     cudaDeviceReset();
 }
 
@@ -704,8 +791,14 @@ void initPixelBuffer()
 void initHistgramBuffers()
 {
     // The raw data hist never needs to be sent to a kernel - we can just normally allocate it.
-    pRawDataHist = (unsigned int*)malloc(BIN_COUNT*sizeof(unsigned int));
-    // We need to allocate this as cuda shared memory - good balance of accessibility and speed
+    pRawDataHist = new unsigned int[BIN_COUNT];
+    for(int i = 0; i < BIN_COUNT; ++i)
+    {
+        pRawDataHist[i] = 0; 
+    }
+
+    //pRawDataHist = (unsigned int*)malloc(BIN_COUNT*sizeof(unsigned int));
+    // We need to allocate this as cuda managed memory - good balance of accessibility and speed
     checkCudaErrors(cudaMallocManaged(&pVolumeDataHist, histSize));
 }
 
@@ -719,12 +812,19 @@ void NormaliseAndBin(void* data, size_t dataSize)
     for(int i = 0; i < dataSize; i++)
     {
         // Dodgy as hell casting, not safe but okay since we know its type
-        normalizedData[i] = (((float)((unsigned char*)data)[i])-DataRange[0])/(DataRange[1]-DataRange[0]);
+        normalizedData[i] = ( ((float)((unsigned char*)data)[i])-DataRange[0] ) / ( DataRange[1]-DataRange[0] );
         // Now we need to bin the value
         float step = 1.f/BIN_COUNT;
-        uint idx = (uint)(normalizedData[i]/step);
+        int idx = (int)(normalizedData[i]/step);
+
         pRawDataHist[idx] += 1;
     }
+
+    for(int i = 0; i < BIN_COUNT; i++)
+    {
+        std::cout << pRawDataHist[i] << " ";
+    }
+    std::cout << std::endl;
 }
 
 // Load raw data from disk
@@ -751,9 +851,9 @@ void *loadRawFile(char *filename, size_t size)
     for(int i = 0; i < (size); i++)
     {
         int val = ((int)((unsigned char*)data)[i]);
-        (val < lowest) ? DataRange[0] = val : (val > highest) ? DataRange[1] = val : NULL;
+        (val < lowest) ? DataRange[0] = val, lowest = val : (val > highest) ? DataRange[1] = val, highest = val:  NULL;
     }
-
+    
     NormaliseAndBin(data, size);
     fclose(fp);
 
@@ -860,6 +960,8 @@ main(int argc, char **argv)
     if (checkCmdLineFlag(argc, (const char **) argv, "-l"))
     {
         LOG_FLAG = true;
+        outputFile = new std::ofstream();
+        outputFile->open("ValidationData.csv", std::ios::out | std::ios::trunc);
     }
 
     if (checkCmdLineFlag(argc, (const char **) argv, "-h"))
@@ -909,6 +1011,8 @@ main(int argc, char **argv)
     glutKeyboardFunc(keyboard);
     glutReshapeFunc(reshape);
     glutSetWindow(windowID[0]); //Change back to the main window once we've handled
+
+    SetupServerConnection();
 
     for(GLint i = 0; i < 2; i++)
     {

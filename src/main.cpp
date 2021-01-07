@@ -69,15 +69,16 @@ unsigned int* pRawDataHist = nullptr;       // The raw data
 
 float entropyA = 0.f, entropyB = 0.f, jointEntropy = 0.f;
 float mutualInformation = 0.f;
-float scale = 0.001f; // This is for scaling the histogram renders - there are many smarter ways to do this
+float scale = 0.0001f; // This is for scaling the histogram renders - there are many smarter ways to do this
 
-size_t BIN_COUNT = 511;              // This crashes at 512, has to be *2-1, I think
+size_t BIN_COUNT = 32;              // This crashes at 512, has to be *2-1, I think
 size_t histSize = sizeof(unsigned int) * BIN_COUNT;
 size_t histSizeCache = 0;
 int DataRange[2] = {0,0}; 
 float highestMI = 0.0f;
 bool LOG_FLAG = false;
 bool LOG_FILE_WRITTEN = false;
+char* exePath = nullptr;
 
 Entropy* Entropy::instance = 0;
 Entropy* entropyHelper = entropyHelper->getInstance(); // Static instance
@@ -154,6 +155,7 @@ extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
 
 void dirtyDrawBitmapString(int x, int y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
 void dirtyDrawBitmapString(float x, float y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
+void *loadRawFile(char *filename, size_t size);
 
 void initPixelBuffer();
 
@@ -243,6 +245,18 @@ void render()
         checkCudaErrors(cudaFree(pVolumeDataHist));
         checkCudaErrors(cudaMallocManaged(&pVolumeDataHist, histSize));
         histSizeCache = histSize;
+
+        char *path = sdkFindFilePath(volumeFilename, exePath);
+
+        if (path == 0)
+        {
+            printf("Error finding file '%s'\n", volumeFilename);
+            exit(EXIT_FAILURE);
+        }
+
+        size_t size = volumeSize.width*volumeSize.height*volumeSize.depth*sizeof(VolumeType);
+        void *h_volume = loadRawFile(path, size);
+        free(h_volume);
     }
 
     copyInvViewMatrix(invViewMatrix, sizeof(float4)*3);
@@ -272,7 +286,8 @@ void render()
 
     entropyHelper->GetEntropy(pVolumeDataHist, pRawDataHist, BIN_COUNT, &entropyA, &entropyB, &jointEntropy, &mutualInformation);
     
-    //std::cout << "Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
+    //std::cout << "Bin Count = " << BIN_COUNT << " | Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
+
     if(LOG_FLAG)
     {
         if(mutualInformation > highestMI)
@@ -536,7 +551,12 @@ void keyboard(unsigned char key, int x, int y)
         case ',':
             transferScale -= 0.01f;
             break;
-
+        case 'q':
+            BIN_COUNT -= 32; 
+            break;
+        case 'w':
+            BIN_COUNT += 32;
+            break;  
         default:
             break;
     }
@@ -705,6 +725,11 @@ void initHistgramBuffers()
 {
     // The raw data hist never needs to be sent to a kernel - we can just normally allocate it.
     pRawDataHist = (unsigned int*)malloc(BIN_COUNT*sizeof(unsigned int));
+    for(int i = 0; i < BIN_COUNT; ++i)
+    {
+        pRawDataHist[i] = 0; 
+    }
+
     // We need to allocate this as cuda shared memory - good balance of accessibility and speed
     checkCudaErrors(cudaMallocManaged(&pVolumeDataHist, histSize));
 }
@@ -872,8 +897,10 @@ main(int argc, char **argv)
         std::cout << "======================================================================" << std::endl;
         exit(EXIT_WAIVED);
     }
+
+    exePath = argv[0];
     // load volume data
-    char *path = sdkFindFilePath(volumeFilename, argv[0]);
+    char *path = sdkFindFilePath(volumeFilename, exePath);
 
     if (path == 0)
     {

@@ -105,7 +105,7 @@ __device__ void BinSingle(float input, uint* histogram, size_t size)
   float step = 1.f/bin_count;
   uint idx = (uint)(input/step);
 
-  histogram[idx] += 1;
+  atomicAdd(&histogram[idx], 1);
 }
 
 __global__ void

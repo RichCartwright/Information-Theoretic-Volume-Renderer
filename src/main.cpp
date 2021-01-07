@@ -172,11 +172,7 @@ extern "C" void copyInvViewMatrix(float *invViewMatrix, size_t sizeofMatrix);
 
 void dirtyDrawBitmapString(int x, int y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
 void dirtyDrawBitmapString(float x, float y, const char* string, GLfloat* colour = nullptr, void* font = GLUT_BITMAP_TIMES_ROMAN_24);
-<<<<<<< HEAD
 void *loadRawFile(char *filename, size_t size);
-
-=======
->>>>>>> b8e68d0e6222f842bf255e0f68032e0249a2e965
 void initPixelBuffer();
 
 void SendToServer(char* message = nullptr);
@@ -368,7 +364,6 @@ void render()
     getLastCudaError("kernel failed");
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
-<<<<<<< HEAD
     entropyHelper->GetEntropy(pVolumeDataHist, pRawDataHist, BIN_COUNT, &entropyA, &entropyB, &jointEntropy, &mutualInformation);
     
     //std::cout << "Bin Count = " << BIN_COUNT << " | Raw entropy = " << entropyA << " | Volume Entropy = " << entropyB << " | Joint Entropy = " << jointEntropy << " | MI = " << mutualInformation << std::endl;
@@ -378,7 +373,6 @@ void render()
         if(mutualInformation > highestMI)
         {
             highestMI = mutualInformation;
-            TakeSnapshot();
         }
 
         // Lets record the whole dump the frame to CSV too, we just need the rotation and MI for now
@@ -395,8 +389,6 @@ void render()
         fprintf(runCSV, "%f,%f,%f,\n", viewRotation.x, viewRotation.y, mutualInformation);
         std::fclose(runCSV); 
     }
-=======
->>>>>>> b8e68d0e6222f842bf255e0f68032e0249a2e965
 }
 
 // display results using OpenGL (called by GLUT)
@@ -843,22 +835,14 @@ void initPixelBuffer()
 void initHistgramBuffers()
 {
     // The raw data hist never needs to be sent to a kernel - we can just normally allocate it.
-<<<<<<< HEAD
     pRawDataHist = (unsigned int*)malloc(BIN_COUNT*sizeof(unsigned int));
-=======
     pRawDataHist = new unsigned int[BIN_COUNT];
->>>>>>> b8e68d0e6222f842bf255e0f68032e0249a2e965
     for(int i = 0; i < BIN_COUNT; ++i)
     {
         pRawDataHist[i] = 0; 
     }
 
-<<<<<<< HEAD
     // We need to allocate this as cuda shared memory - good balance of accessibility and speed
-=======
-    //pRawDataHist = (unsigned int*)malloc(BIN_COUNT*sizeof(unsigned int));
-    // We need to allocate this as cuda managed memory - good balance of accessibility and speed
->>>>>>> b8e68d0e6222f842bf255e0f68032e0249a2e965
     checkCudaErrors(cudaMallocManaged(&pVolumeDataHist, histSize));
 }
 

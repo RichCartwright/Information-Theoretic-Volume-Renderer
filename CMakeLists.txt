@@ -1,3 +1,4 @@
+cmake_policy(SET CMP0104 OLD)
 cmake_minimum_required(VERSION 3.8 FATAL_ERROR)
 project(EntropyVolumeRenderer LANGUAGES CXX CUDA)
 
@@ -25,12 +26,15 @@ set_target_properties(  MIVolumeRender
                         PROPERTIES CUDA_SEPARABLE_COMPILATION ON
                         )
 
+
 add_executable(MIVolumeRenderer src/main.cpp)
 
 find_package(Eigen3 3.3 REQUIRED)
 find_package(OpenGL REQUIRED COMPONENTS OpenGL)
 find_package(GLUT REQUIRED)
 find_package(GLEW 2.0 REQUIRED)
+
+set_property(TARGET MIVolumeRenderer PROPERTY CMAKE_CUDA_ARCHITECTURES 35 50 72)
 
 add_dependencies(MIVolumeRenderer OpenGL::OpenGL)
 include_directories(
